@@ -1005,5 +1005,146 @@ def retire(retirement_age: int, expenses: float, years: int, swedish_payout: int
         console.print(f"[green]Portfolio sustains expenses until age {last_funded.age} ({last_funded.year})[/green]")
 
 
+@cli.command("optimize")
+@click.option("--retirement-age", "-r", type=int, default=45, help="Age to retire")
+@click.option("--death-age", "-d", type=int, default=100, help="Target age for portfolio depletion")
+@click.option("--pension-stop", type=int, default=38, help="Age to stop max pension contributions")
+@click.option("--pension-access", type=int, default=57, help="Age when UK pension becomes accessible")
+@click.option("--top", "-n", type=int, default=10, help="Number of strategies to show")
+def optimize(retirement_age: int, death_age: int, pension_stop: int, pension_access: int, top: int):
+    """Find optimal two-phase withdrawal strategy.
+
+    Calculates the best bridge (pre-pension) and pension phase spending
+    to maximize lifetime spending while depleting to ~£0 at target death age.
+
+    The bridge phase is from retirement until UK pension access (typically 57).
+    Every pound saved during the bridge grows and funds more spending later.
+
+    Examples:
+        fire optimize                      # Default: retire 45, die 100
+        fire optimize -r 50 -d 95          # Retire 50, die 95
+        fire optimize --pension-stop 40    # Stop max pension at 40
+    """
+    from .optimizer import (
+        OptimizationParams,
+        optimize_withdrawal_strategy,
+        get_balances_at_retirement,
+    )
+
+    portfolio = load_portfolio()
+
+    if not portfolio.accounts:
+        console.print("[yellow]No accounts configured. Run 'fire init' or update data/config.yaml[/yellow]")
+        return
+
+    current_age = portfolio.settings.current_age
+
+    # Set up parameters
+    params = OptimizationParams(
+        current_age=current_age,
+        retirement_age=retirement_age,
+        death_age=death_age,
+        pension_access_age=pension_access,
+        pension_contribution_stop_age=pension_stop,
+    )
+
+    # Get contribution info from portfolio
+    if portfolio.income:
+        params.pension_contribution_min = portfolio.income.gross_salary * 0.12
+        console.print(f"[dim]Using 12% employer match: £{params.pension_contribution_min:,.0f}/yr[/dim]")
+
+    # Get exchange rate
+    params.sek_to_gbp = portfolio.exchange_rates.get("SEK_GBP", 0.073)
+
+    # Show current balances and projected at retirement
+    console.print()
+    console.print(Panel.fit("[bold]Withdrawal Optimization[/bold]", style="blue"))
+    console.print()
+
+    balances = get_balances_at_retirement(portfolio, params)
+
+    console.print(f"[bold]Projected Balances at Retirement (age {retirement_age}):[/bold]")
+    console.print(f"  ISA: £{balances['isa']:,.0f}")
+    console.print(f"  UK Pension: £{balances['uk_pension']:,.0f}")
+    console.print(f"  Swedish Private: {balances['swedish_private_sek']:,.0f} SEK (£{balances['swedish_private_sek'] * params.sek_to_gbp:,.0f})")
+    console.print(f"  Swedish State: {balances['swedish_state_sek']:,.0f} SEK (£{balances['swedish_state_sek'] * params.sek_to_gbp:,.0f})")
+    console.print(f"  Cash: £{balances['cash']:,.0f}")
+    console.print(f"  [bold]Total: £{balances['total_gbp']:,.0f}[/bold]")
+
+    console.print()
+    console.print(f"[bold]Assumptions:[/bold]")
+    console.print(f"  Current age: {current_age}")
+    console.print(f"  Retire at: {retirement_age}")
+    console.print(f"  Target death age: {death_age}")
+    console.print(f"  UK pension accessible: {pension_access}")
+    console.print(f"  Bridge phase: {retirement_age}-{pension_access - 1} ({pension_access - retirement_age} years)")
+    console.print(f"  Pension phase: {pension_access}-{death_age} ({death_age - pension_access + 1} years)")
+    console.print(f"  Pension contributions: full until {pension_stop}, then employer match until {retirement_age}")
+    console.print(f"  Growth rate: 4% real")
+
+    # Run optimization
+    console.print()
+    console.print("[bold]Finding optimal strategies...[/bold]")
+
+    results = optimize_withdrawal_strategy(portfolio, params)
+
+    if not results:
+        console.print("[red]No viable strategies found. You may need to work longer or reduce spending.[/red]")
+        return
+
+    console.print()
+    console.print(f"[bold]Top {min(top, len(results))} Strategies (sorted by lifetime spending):[/bold]")
+    console.print()
+
+    table = Table()
+    table.add_column("Bridge\n(45-56)", justify="right")
+    table.add_column("Pension\n(57-100)", justify="right")
+    table.add_column("Monthly\nBridge", justify="right")
+    table.add_column("Monthly\nPension", justify="right")
+    table.add_column("Jump at\n57", justify="right")
+    table.add_column("Lifetime\nTotal", justify="right", style="green")
+
+    for i, r in enumerate(results[:top]):
+        style = "bold" if i == 0 else ""
+        jump_style = "green" if r.jump_percent > 0 else "red" if r.jump_percent < 0 else ""
+
+        table.add_row(
+            f"£{r.bridge_spend:,.0f}",
+            f"£{r.pension_spend:,.0f}",
+            f"£{r.monthly_bridge:,.0f}",
+            f"£{r.monthly_pension:,.0f}",
+            f"[{jump_style}]{r.jump_percent:+.0f}%[/{jump_style}]" if jump_style else f"{r.jump_percent:+.0f}%",
+            f"£{r.total_lifetime_spending:,.0f}",
+            style=style,
+        )
+
+    console.print(table)
+
+    # Highlight best and most balanced
+    best = results[0]
+    console.print()
+    console.print(f"[bold green]Maximum Lifetime Spending:[/bold green]")
+    console.print(f"  Bridge: £{best.bridge_spend:,.0f}/yr (£{best.monthly_bridge:,.0f}/mo)")
+    console.print(f"  Pension: £{best.pension_spend:,.0f}/yr (£{best.monthly_pension:,.0f}/mo)")
+    console.print(f"  Total: £{best.total_lifetime_spending:,.0f} over {best.bridge_years + best.pension_years} years")
+
+    # Find most balanced (closest to 30-40% jump)
+    balanced = min(results, key=lambda r: abs(r.jump_percent - 35))
+    if balanced != best:
+        console.print()
+        console.print(f"[bold cyan]Most Balanced (35% jump):[/bold cyan]")
+        console.print(f"  Bridge: £{balanced.bridge_spend:,.0f}/yr (£{balanced.monthly_bridge:,.0f}/mo)")
+        console.print(f"  Pension: £{balanced.pension_spend:,.0f}/yr (£{balanced.monthly_pension:,.0f}/mo)")
+        console.print(f"  Total: £{balanced.total_lifetime_spending:,.0f} over {balanced.bridge_years + balanced.pension_years} years")
+
+    # Find flat rate option
+    flat = min(results, key=lambda r: abs(r.jump_percent))
+    if flat not in (best, balanced):
+        console.print()
+        console.print(f"[bold yellow]Flat Rate (simplest):[/bold yellow]")
+        console.print(f"  £{flat.bridge_spend:,.0f}/yr throughout")
+        console.print(f"  Total: £{flat.total_lifetime_spending:,.0f}")
+
+
 if __name__ == "__main__":
     cli()
