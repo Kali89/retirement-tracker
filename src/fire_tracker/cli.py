@@ -697,7 +697,10 @@ def config_cmd(
 @click.option("--expenses", "-e", type=float, default=70000, help="Annual expenses in retirement")
 @click.option("--years", "-y", type=int, default=60, help="Years to project")
 @click.option("--swedish-payout", type=int, default=20, help="Swedish private pension payout years")
-def retire(retirement_age: int, expenses: float, years: int, swedish_payout: int):
+@click.option("--pension-stop", type=int, default=None, help="Age to stop pension contributions")
+@click.option("--isa-stop", type=int, default=None, help="Age to stop ISA contributions")
+def retire(retirement_age: int, expenses: float, years: int, swedish_payout: int,
+           pension_stop: Optional[int], isa_stop: Optional[int]):
     """Project retirement withdrawals with multiple pots at different access ages.
 
     Shows year-by-year projection of:
@@ -711,6 +714,10 @@ def retire(retirement_age: int, expenses: float, years: int, swedish_payout: int
     - UK Pension: 57
     - Swedish State Pension: 66
     - UK State Pension: 67
+
+    Examples:
+    - fire retire --pension-stop 38   # Stop pension contributions at 38
+    - fire retire -r 50 -e 60000      # Retire at 50 with £60k expenses
     """
     from .retirement_model import (
         RetirementScenario,
@@ -834,11 +841,22 @@ def retire(retirement_age: int, expenses: float, years: int, swedish_payout: int
         pots=pots,
     )
 
-    projections = run_retirement_projection(scenario, years)
+    # Use provided stop ages or default to retirement age
+    effective_pension_stop = pension_stop if pension_stop is not None else retirement_age
+    effective_isa_stop = isa_stop if isa_stop is not None else retirement_age
+
+    projections = run_retirement_projection(
+        scenario, years,
+        pension_contribution_stop_age=effective_pension_stop,
+        isa_contribution_stop_age=effective_isa_stop,
+    )
 
     # Display results
     console.print()
-    console.print(Panel.fit(f"[bold]Retirement Projection: Retire at {retirement_age}[/bold]", style="blue"))
+    title = f"[bold]Retirement Projection: Retire at {retirement_age}[/bold]"
+    if pension_stop or isa_stop:
+        title += " (modified contributions)"
+    console.print(Panel.fit(title, style="blue"))
     console.print()
 
     console.print("[bold]Current Pots:[/bold]")
@@ -856,6 +874,8 @@ def retire(retirement_age: int, expenses: float, years: int, swedish_payout: int
     console.print(f"  Retirement age: {retirement_age}")
     console.print(f"  Annual expenses: £{expenses:,.0f}")
     console.print(f"  Growth rate: 4% real")
+    console.print(f"  Pension contributions: until age {effective_pension_stop}")
+    console.print(f"  ISA contributions: until age {effective_isa_stop}")
     console.print(f"  UK State Pension: £11,500/yr from age 67")
     console.print(f"  Swedish private pension payout: {swedish_payout} years from age 55")
 

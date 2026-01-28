@@ -107,11 +107,26 @@ class YearProjection:
 def run_retirement_projection(
     scenario: RetirementScenario,
     projection_years: int = 60,
+    pension_contribution_stop_age: Optional[int] = None,
+    isa_contribution_stop_age: Optional[int] = None,
 ) -> list[YearProjection]:
-    """Run a full retirement projection showing withdrawals from each pot."""
+    """Run a full retirement projection showing withdrawals from each pot.
+
+    Args:
+        scenario: The retirement scenario configuration
+        projection_years: How many years to project
+        pension_contribution_stop_age: Age to stop pension contributions (None = retirement)
+        isa_contribution_stop_age: Age to stop ISA contributions (None = retirement)
+    """
 
     projections = []
     current_year = date.today().year
+
+    # Default stop ages to retirement age
+    if pension_contribution_stop_age is None:
+        pension_contribution_stop_age = scenario.retirement_age
+    if isa_contribution_stop_age is None:
+        isa_contribution_stop_age = scenario.retirement_age
 
     # Initialize pot balances
     isa_balance = sum(
@@ -283,9 +298,11 @@ def run_retirement_projection(
                 proj.cash_withdrawal
             )
         else:
-            # Still working - add contributions
-            isa_balance += isa_contribution
-            uk_pension_balance += pension_contribution
+            # Still working - add contributions if before stop age
+            if age < isa_contribution_stop_age:
+                isa_balance += isa_contribution
+            if age < pension_contribution_stop_age:
+                uk_pension_balance += pension_contribution
 
         # Apply growth to remaining balances
         isa_balance *= (1 + isa_growth)
