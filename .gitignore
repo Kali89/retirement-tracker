@@ -36,9 +36,12 @@ ENV/
 .coverage
 htmlcov/
 
-# Data files (keep example, ignore user config)
+# Data files (keep example, ignore user config and sensitive files)
 data/config.yaml
 data/history/
+data/*.csv
+data/Net Worth*
+data/Retirement Calculator*
 
 # OS
 .DS_Store

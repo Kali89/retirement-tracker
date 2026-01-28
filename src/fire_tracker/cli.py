@@ -692,5 +692,275 @@ def config_cmd(
     console.print("[green]Settings updated.[/green]")
 
 
+@cli.command("retire")
+@click.option("--retirement-age", "-r", type=int, default=45, help="Age to retire")
+@click.option("--expenses", "-e", type=float, default=70000, help="Annual expenses in retirement")
+@click.option("--years", "-y", type=int, default=60, help="Years to project")
+@click.option("--swedish-payout", type=int, default=20, help="Swedish private pension payout years")
+def retire(retirement_age: int, expenses: float, years: int, swedish_payout: int):
+    """Project retirement withdrawals with multiple pots at different access ages.
+
+    Shows year-by-year projection of:
+    - Which pots you can access at each age
+    - How much to withdraw from each pot
+    - Whether you'll have shortfalls
+
+    Access ages:
+    - ISA: Anytime (from retirement)
+    - Swedish Private Pension: 55
+    - UK Pension: 57
+    - Swedish State Pension: 66
+    - UK State Pension: 67
+    """
+    from .retirement_model import (
+        RetirementScenario,
+        RetirementPot,
+        PotType,
+        run_retirement_projection,
+    )
+
+    portfolio = load_portfolio()
+
+    if not portfolio.accounts:
+        console.print("[yellow]No accounts configured.[/yellow]")
+        return
+
+    currency = portfolio.settings.base_currency
+    current_age = portfolio.settings.current_age
+
+    # Build pots from portfolio accounts
+    pots = []
+
+    # Aggregate ISAs
+    isa_balance = sum(
+        a.balance for a in portfolio.accounts
+        if a.type in (AccountType.SS_ISA, AccountType.CASH_ISA) and a.currency == Currency.GBP
+    )
+    isa_contribution = sum(
+        a.monthly_contribution * 12 for a in portfolio.accounts
+        if a.type in (AccountType.SS_ISA, AccountType.CASH_ISA) and a.currency == Currency.GBP
+    )
+    if isa_balance > 0 or isa_contribution > 0:
+        pots.append(RetirementPot(
+            name="S&S ISAs",
+            pot_type=PotType.ISA,
+            balance=isa_balance,
+            currency=Currency.GBP,
+            annual_contribution=isa_contribution,
+            growth_rate=0.04,
+            accessible_age=0,
+        ))
+
+    # Aggregate UK Pensions
+    pension_balance = sum(
+        a.balance for a in portfolio.accounts
+        if a.type == AccountType.UK_PENSION and a.currency == Currency.GBP
+    )
+    pension_contribution = sum(
+        a.monthly_contribution * 12 for a in portfolio.accounts
+        if a.type == AccountType.UK_PENSION and a.currency == Currency.GBP
+    )
+    if pension_balance > 0 or pension_contribution > 0:
+        pots.append(RetirementPot(
+            name="UK Pensions",
+            pot_type=PotType.UK_PENSION,
+            balance=pension_balance,
+            currency=Currency.GBP,
+            annual_contribution=pension_contribution,
+            growth_rate=0.04,
+            accessible_age=57,
+        ))
+
+    # Swedish Private Pension
+    swedish_private = sum(
+        a.balance for a in portfolio.accounts
+        if a.type == AccountType.SWEDISH_PENSION and "state" not in a.name.lower()
+    )
+    if swedish_private > 0:
+        pots.append(RetirementPot(
+            name="Swedish Private Pension",
+            pot_type=PotType.SWEDISH_PRIVATE_PENSION,
+            balance=swedish_private,
+            currency=Currency.SEK,
+            annual_contribution=0,
+            growth_rate=0.04,
+            accessible_age=55,
+            payout_years=swedish_payout,
+        ))
+
+    # Swedish State Pension
+    swedish_state = sum(
+        a.balance for a in portfolio.accounts
+        if a.type == AccountType.SWEDISH_PENSION and "state" in a.name.lower()
+    )
+    if swedish_state > 0:
+        pots.append(RetirementPot(
+            name="Swedish State Pension",
+            pot_type=PotType.SWEDISH_STATE_PENSION,
+            balance=swedish_state,
+            currency=Currency.SEK,
+            annual_contribution=0,
+            growth_rate=0.04,
+            accessible_age=66,
+            payout_years=20,
+        ))
+
+    # Cash
+    cash_balance = sum(
+        a.balance for a in portfolio.accounts
+        if a.type == AccountType.CASH and a.currency == Currency.GBP
+    )
+    if cash_balance > 0:
+        pots.append(RetirementPot(
+            name="Cash",
+            pot_type=PotType.CASH,
+            balance=cash_balance,
+            currency=Currency.GBP,
+            annual_contribution=0,
+            growth_rate=0.02,
+            accessible_age=0,
+        ))
+
+    if not pots:
+        console.print("[yellow]No retirement pots found in accounts.[/yellow]")
+        return
+
+    scenario = RetirementScenario(
+        current_age=current_age,
+        retirement_age=retirement_age,
+        annual_expenses=expenses,
+        base_currency=currency,
+        exchange_rate_sek_gbp=portfolio.exchange_rates.get("SEK_GBP", 0.073),
+        pots=pots,
+    )
+
+    projections = run_retirement_projection(scenario, years)
+
+    # Display results
+    console.print()
+    console.print(Panel.fit(f"[bold]Retirement Projection: Retire at {retirement_age}[/bold]", style="blue"))
+    console.print()
+
+    console.print("[bold]Current Pots:[/bold]")
+    for pot in pots:
+        if pot.currency == Currency.SEK:
+            balance_str = f"{pot.balance:,.0f} SEK (£{pot.balance * scenario.exchange_rate_sek_gbp:,.0f})"
+        else:
+            balance_str = f"£{pot.balance:,.0f}"
+        access_str = f"from age {pot.accessible_age}" if pot.accessible_age > 0 else "anytime"
+        contrib_str = f", +£{pot.annual_contribution:,.0f}/yr" if pot.annual_contribution > 0 else ""
+        console.print(f"  {pot.name}: {balance_str} ({access_str}{contrib_str})")
+
+    console.print()
+    console.print(f"[bold]Assumptions:[/bold]")
+    console.print(f"  Retirement age: {retirement_age}")
+    console.print(f"  Annual expenses: £{expenses:,.0f}")
+    console.print(f"  Growth rate: 4% real")
+    console.print(f"  UK State Pension: £11,500/yr from age 67")
+    console.print(f"  Swedish private pension payout: {swedish_payout} years from age 55")
+
+    console.print()
+    console.print("[bold]Year-by-Year Projection:[/bold]")
+    console.print()
+
+    # Create table
+    table = Table()
+    table.add_column("Age", justify="right", style="cyan")
+    table.add_column("Year", justify="right")
+    table.add_column("ISA", justify="right")
+    table.add_column("UK Pension", justify="right")
+    table.add_column("Swe Priv", justify="right")
+    table.add_column("Total", justify="right", style="green")
+    table.add_column("Income", justify="right")
+    table.add_column("From", justify="left")
+
+    # Show key years
+    key_ages = set([current_age, retirement_age, 55, 57, 66, 67])
+    for proj in projections:
+        # Show: current, every year until retirement, then key ages, then every 5 years
+        show = (
+            proj.age == current_age or
+            proj.age <= retirement_age or
+            proj.age in key_ages or
+            (proj.age > retirement_age and (proj.age - retirement_age) % 5 == 0) or
+            proj.shortfall > 0
+        )
+        if not show:
+            continue
+
+        swe_priv_gbp = proj.swedish_private_balance * scenario.exchange_rate_sek_gbp
+
+        # Build income source string
+        sources = []
+        if proj.isa_withdrawal > 0:
+            sources.append(f"ISA £{proj.isa_withdrawal:,.0f}")
+        if proj.uk_pension_withdrawal > 0:
+            sources.append(f"Pen £{proj.uk_pension_withdrawal:,.0f}")
+        if proj.swedish_private_withdrawal > 0:
+            sources.append(f"SwP £{proj.swedish_private_withdrawal:,.0f}")
+        if proj.swedish_state_withdrawal > 0:
+            sources.append(f"SwS £{proj.swedish_state_withdrawal:,.0f}")
+        if proj.uk_state_pension > 0:
+            sources.append(f"SP £{proj.uk_state_pension:,.0f}")
+        source_str = ", ".join(sources) if sources else "-"
+
+        income_str = f"£{proj.total_income:,.0f}" if proj.total_income > 0 else "-"
+        if proj.shortfall > 0:
+            income_str = f"[red]£{proj.total_income:,.0f} (SHORT £{proj.shortfall:,.0f})[/red]"
+
+        row_style = ""
+        if proj.age == retirement_age:
+            row_style = "bold"
+        elif proj.shortfall > 0:
+            row_style = "red"
+
+        table.add_row(
+            str(proj.age),
+            str(proj.year),
+            f"£{proj.isa_balance:,.0f}",
+            f"£{proj.uk_pension_balance:,.0f}",
+            f"£{swe_priv_gbp:,.0f}",
+            f"£{proj.total_portfolio_gbp:,.0f}",
+            income_str,
+            source_str,
+            style=row_style,
+        )
+
+    console.print(table)
+
+    # Summary
+    console.print()
+    retirement_proj = next((p for p in projections if p.age == retirement_age), None)
+    if retirement_proj:
+        console.print(f"[bold]At retirement (age {retirement_age}):[/bold]")
+        console.print(f"  Total portfolio: £{retirement_proj.total_portfolio_gbp:,.0f}")
+        console.print(f"  Available immediately (ISA): £{retirement_proj.isa_balance:,.0f}")
+
+        # Years until other pots accessible
+        years_to_55 = max(0, 55 - retirement_age)
+        years_to_57 = max(0, 57 - retirement_age)
+        if years_to_55 > 0:
+            console.print(f"  Swedish private pension accessible in {years_to_55} years (age 55)")
+        if years_to_57 > 0:
+            console.print(f"  UK pension accessible in {years_to_57} years (age 57)")
+
+    # Check for shortfalls
+    shortfall_years = [p for p in projections if p.shortfall > 0]
+    if shortfall_years:
+        console.print()
+        console.print(f"[red bold]Warning: Shortfalls detected in {len(shortfall_years)} years![/red bold]")
+        first_shortfall = shortfall_years[0]
+        console.print(f"  First shortfall at age {first_shortfall.age}: £{first_shortfall.shortfall:,.0f}")
+    else:
+        # Find when money runs out
+        last_funded = projections[-1]
+        for p in reversed(projections):
+            if p.total_portfolio_gbp > 1000:
+                last_funded = p
+                break
+        console.print()
+        console.print(f"[green]Portfolio sustains expenses until age {last_funded.age} ({last_funded.year})[/green]")
+
+
 if __name__ == "__main__":
     cli()
