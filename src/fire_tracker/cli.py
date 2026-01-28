@@ -697,10 +697,11 @@ def config_cmd(
 @click.option("--expenses", "-e", type=float, default=70000, help="Annual expenses in retirement")
 @click.option("--years", "-y", type=int, default=60, help="Years to project")
 @click.option("--swedish-payout", type=int, default=20, help="Swedish private pension payout years")
-@click.option("--pension-stop", type=int, default=None, help="Age to stop pension contributions")
+@click.option("--pension-stop", type=int, default=None, help="Age to stop max pension contributions (continues with employer match)")
+@click.option("--pension-min", type=float, default=None, help="Minimum annual pension contribution after stop age (default: 12% of salary for employer match)")
 @click.option("--isa-stop", type=int, default=None, help="Age to stop ISA contributions")
 def retire(retirement_age: int, expenses: float, years: int, swedish_payout: int,
-           pension_stop: Optional[int], isa_stop: Optional[int]):
+           pension_stop: Optional[int], pension_min: Optional[float], isa_stop: Optional[int]):
     """Project retirement withdrawals with multiple pots at different access ages.
 
     Shows year-by-year projection of:
@@ -715,8 +716,13 @@ def retire(retirement_age: int, expenses: float, years: int, swedish_payout: int
     - Swedish State Pension: 66
     - UK State Pension: 67
 
+    When --pension-stop is used, contributions drop to the employer match level
+    (default 12% of salary = 4% employee + 8% employer) rather than stopping
+    entirely. Override with --pension-min.
+
     Examples:
-    - fire retire --pension-stop 38   # Stop pension contributions at 38
+    - fire retire --pension-stop 38   # Reduce to employer match at 38
+    - fire retire --pension-stop 38 --pension-min 30000  # Custom minimum
     - fire retire -r 50 -e 60000      # Retire at 50 with £60k expenses
     """
     from .retirement_model import (
@@ -845,10 +851,20 @@ def retire(retirement_age: int, expenses: float, years: int, swedish_payout: int
     effective_pension_stop = pension_stop if pension_stop is not None else retirement_age
     effective_isa_stop = isa_stop if isa_stop is not None else retirement_age
 
+    # Calculate minimum pension contribution (employer match)
+    # Default: 12% of salary (4% employee + 8% employer match)
+    if pension_min is not None:
+        effective_pension_min = pension_min
+    elif portfolio.income:
+        effective_pension_min = portfolio.income.gross_salary * 0.12
+    else:
+        effective_pension_min = 0.0
+
     projections = run_retirement_projection(
         scenario, years,
         pension_contribution_stop_age=effective_pension_stop,
         isa_contribution_stop_age=effective_isa_stop,
+        pension_contribution_minimum=effective_pension_min,
     )
 
     # Display results
@@ -874,7 +890,14 @@ def retire(retirement_age: int, expenses: float, years: int, swedish_payout: int
     console.print(f"  Retirement age: {retirement_age}")
     console.print(f"  Annual expenses: £{expenses:,.0f}")
     console.print(f"  Growth rate: 4% real")
-    console.print(f"  Pension contributions: until age {effective_pension_stop}")
+
+    # Show pension contribution phases
+    pension_full = sum(p.annual_contribution for p in pots if p.pot_type == PotType.UK_PENSION)
+    if pension_stop and pension_stop < retirement_age:
+        console.print(f"  Pension: £{pension_full:,.0f}/yr until {effective_pension_stop}, then £{effective_pension_min:,.0f}/yr (employer match) until {retirement_age}")
+    else:
+        console.print(f"  Pension contributions: £{pension_full:,.0f}/yr until age {effective_pension_stop}")
+
     console.print(f"  ISA contributions: until age {effective_isa_stop}")
     console.print(f"  UK State Pension: £11,500/yr from age 67")
     console.print(f"  Swedish private pension payout: {swedish_payout} years from age 55")

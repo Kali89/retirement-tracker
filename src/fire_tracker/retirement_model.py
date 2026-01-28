@@ -109,14 +109,17 @@ def run_retirement_projection(
     projection_years: int = 60,
     pension_contribution_stop_age: Optional[int] = None,
     isa_contribution_stop_age: Optional[int] = None,
+    pension_contribution_minimum: float = 0.0,
 ) -> list[YearProjection]:
     """Run a full retirement projection showing withdrawals from each pot.
 
     Args:
         scenario: The retirement scenario configuration
         projection_years: How many years to project
-        pension_contribution_stop_age: Age to stop pension contributions (None = retirement)
+        pension_contribution_stop_age: Age to reduce pension to minimum (None = retirement)
         isa_contribution_stop_age: Age to stop ISA contributions (None = retirement)
+        pension_contribution_minimum: Minimum pension contribution (e.g., employer match)
+            that continues from stop_age until retirement
     """
 
     projections = []
@@ -298,11 +301,16 @@ def run_retirement_projection(
                 proj.cash_withdrawal
             )
         else:
-            # Still working - add contributions if before stop age
+            # Still working - add contributions based on age
             if age < isa_contribution_stop_age:
                 isa_balance += isa_contribution
+
             if age < pension_contribution_stop_age:
+                # Full contributions before stop age
                 uk_pension_balance += pension_contribution
+            elif age < scenario.retirement_age:
+                # Minimum contributions (employer match) from stop age until retirement
+                uk_pension_balance += pension_contribution_minimum
 
         # Apply growth to remaining balances
         isa_balance *= (1 + isa_growth)
