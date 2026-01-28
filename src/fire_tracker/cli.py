@@ -1146,5 +1146,145 @@ def optimize(retirement_age: int, death_age: int, pension_stop: int, pension_acc
         console.print(f"  Total: £{flat.total_lifetime_spending:,.0f}")
 
 
+@cli.command("earliest")
+@click.option("--spending", "-s", type=float, default=70000, help="Minimum annual spending required")
+@click.option("--pension-stop", type=int, default=38, help="Age to stop max pension contributions")
+@click.option("--pension-access", type=int, default=57, help="Age when UK pension becomes accessible")
+def earliest(spending: float, pension_stop: int, pension_access: int):
+    """Find the earliest possible retirement age.
+
+    Calculates the earliest age at which your ISA can sustain the required
+    spending level until your UK pension becomes accessible.
+
+    The constraint is the "bridge" - the period between retirement and
+    pension access where you must live off ISA + Swedish pension only.
+
+    Examples:
+        fire earliest                  # Default £70k/year spending
+        fire earliest -s 60000         # Lower spending = earlier retirement
+        fire earliest -s 80000         # Higher spending = later retirement
+    """
+    from .optimizer import (
+        OptimizationParams,
+        find_earliest_retirement,
+        calculate_max_bridge_spending,
+    )
+
+    portfolio = load_portfolio()
+
+    if not portfolio.accounts:
+        console.print("[yellow]No accounts configured.[/yellow]")
+        return
+
+    current_age = portfolio.settings.current_age
+
+    # Set up parameters
+    params = OptimizationParams(
+        current_age=current_age,
+        retirement_age=45,  # Not used directly
+        death_age=100,
+        pension_access_age=pension_access,
+        pension_contribution_stop_age=pension_stop,
+    )
+
+    # Get contribution info from portfolio
+    if portfolio.income:
+        params.pension_contribution_min = portfolio.income.gross_salary * 0.12
+
+    params.sek_to_gbp = portfolio.exchange_rates.get("SEK_GBP", 0.073)
+
+    isa_contribution = sum(
+        a.monthly_contribution * 12 for a in portfolio.accounts
+        if a.type in (AccountType.SS_ISA, AccountType.CASH_ISA) and a.currency == Currency.GBP
+    )
+    if isa_contribution > 0:
+        params.isa_contribution = isa_contribution
+
+    pension_contribution = sum(
+        a.monthly_contribution * 12 for a in portfolio.accounts
+        if a.type == AccountType.UK_PENSION and a.currency == Currency.GBP
+    )
+    if pension_contribution > 0:
+        params.pension_contribution_full = pension_contribution
+
+    # Run analysis
+    results = find_earliest_retirement(portfolio, spending, params)
+
+    # Find earliest viable
+    earliest_viable = next((r for r in results if r["can_retire"]), None)
+
+    console.print()
+    console.print(Panel.fit("[bold]Earliest Retirement Analysis[/bold]", style="blue"))
+    console.print()
+
+    console.print(f"[bold]Target:[/bold] £{spending:,.0f}/year minimum spending")
+    console.print(f"[bold]Bridge:[/bold] Retirement → age {pension_access} (when UK pension accessible)")
+    console.print(f"[bold]Contributions:[/bold] Full pension until {pension_stop}, then employer match")
+    console.print()
+
+    # Show table of ages
+    table = Table()
+    table.add_column("Retire\nAge", justify="right", style="cyan")
+    table.add_column("Bridge\nYears", justify="right")
+    table.add_column("ISA at\nRetirement", justify="right")
+    table.add_column("ISA\nNeeded", justify="right")
+    table.add_column("Surplus/\nDeficit", justify="right")
+    table.add_column("Max Bridge\nSpend", justify="right")
+    table.add_column("", justify="center")
+
+    # Show ages around the transition point
+    show_ages = range(max(current_age, 40), min(55, pension_access + 1))
+
+    for r in results:
+        if r["retirement_age"] not in show_ages:
+            continue
+
+        surplus = r["surplus"]
+        if surplus >= 0:
+            surplus_str = f"[green]+£{surplus:,.0f}[/green]"
+            status = "[green]✓[/green]"
+        else:
+            surplus_str = f"[red]-£{abs(surplus):,.0f}[/red]"
+            status = "[red]✗[/red]"
+
+        style = "bold" if r == earliest_viable else ""
+
+        table.add_row(
+            str(r["retirement_age"]),
+            str(r["bridge_years"]),
+            f"£{r['isa_at_retirement']:,.0f}",
+            f"£{r['isa_needed']:,.0f}",
+            surplus_str,
+            f"£{r['max_bridge_spend']:,.0f}",
+            status,
+            style=style,
+        )
+
+    console.print(table)
+
+    if earliest_viable:
+        console.print()
+        console.print(f"[bold green]EARLIEST RETIREMENT: Age {earliest_viable['retirement_age']}[/bold green]")
+        console.print(f"  Bridge: {earliest_viable['bridge_years']} years until pension at {pension_access}")
+        console.print(f"  ISA at retirement: £{earliest_viable['isa_at_retirement']:,.0f}")
+        console.print(f"  ISA needed for £{spending:,.0f}/yr: £{earliest_viable['isa_needed']:,.0f}")
+        console.print(f"  Safety margin: £{earliest_viable['surplus']:,.0f}")
+        console.print(f"  UK Pension at {pension_access}: £{earliest_viable['pension_at_access']:,.0f}")
+
+        # Show what spending is possible at a few key ages
+        console.print()
+        console.print("[bold]Spending flexibility by retirement age:[/bold]")
+        for r in results:
+            if r["retirement_age"] in [earliest_viable["retirement_age"], 45, 50] and r["can_retire"]:
+                console.print(
+                    f"  Age {r['retirement_age']}: "
+                    f"£{spending:,.0f}/yr minimum, up to £{r['max_bridge_spend']:,.0f}/yr maximum"
+                )
+    else:
+        console.print()
+        console.print("[red]Cannot retire before pension access age with this spending level.[/red]")
+        console.print(f"Consider reducing spending below £{spending:,.0f}/year or working longer.")
+
+
 if __name__ == "__main__":
     cli()

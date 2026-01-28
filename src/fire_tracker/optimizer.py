@@ -7,6 +7,18 @@ from .models import AccountType, Currency, Portfolio
 
 
 @dataclass
+class EarliestRetirementResult:
+    """Result of earliest retirement calculation."""
+    earliest_age: int
+    isa_at_retirement: float
+    isa_needed: float
+    surplus: float
+    bridge_years: int
+    pension_at_57: float
+    max_bridge_spend: float  # Max spending during bridge given ISA
+
+
+@dataclass
 class OptimizationResult:
     """Result of a two-phase optimization."""
     bridge_spend: float
@@ -335,3 +347,156 @@ def get_balances_at_retirement(
         "cash": cash,
         "total_gbp": isa + uk_pension + cash + (swedish_private + swedish_state) * params.sek_to_gbp,
     }
+
+
+def calculate_isa_needed_for_bridge(
+    retirement_age: int,
+    pension_access_age: int,
+    annual_spending: float,
+    swedish_private_access_age: int = 55,
+    swedish_private_annual: float = 5275,
+    growth_rate: float = 0.04,
+) -> float:
+    """Calculate ISA balance needed at retirement to bridge to pension access.
+
+    Works backwards from pension access age to determine how much ISA
+    is needed to sustain the target spending level.
+    """
+    if retirement_age >= pension_access_age:
+        return 0  # No bridge needed
+
+    isa_needed = 0
+
+    # Work backwards from pension access age
+    for age in range(pension_access_age - 1, retirement_age - 1, -1):
+        # Swedish private pension helps from its access age
+        if age >= swedish_private_access_age:
+            withdrawal = annual_spending - swedish_private_annual
+        else:
+            withdrawal = annual_spending
+
+        # Need to have (isa_needed + withdrawal) at start of year
+        # which after growth becomes isa_needed at end of year
+        isa_needed = (isa_needed + withdrawal) / (1 + growth_rate)
+
+    return isa_needed
+
+
+def calculate_max_bridge_spending(
+    isa_at_retirement: float,
+    retirement_age: int,
+    pension_access_age: int,
+    swedish_private_access_age: int = 55,
+    swedish_private_annual: float = 5275,
+    growth_rate: float = 0.04,
+) -> float:
+    """Calculate maximum sustainable spending during bridge given ISA balance."""
+    if retirement_age >= pension_access_age:
+        return float('inf')  # No bridge constraint
+
+    # Binary search for max spending
+    low, high = 30000, 200000
+
+    while high - low > 100:
+        mid = (low + high) / 2
+        needed = calculate_isa_needed_for_bridge(
+            retirement_age, pension_access_age, mid,
+            swedish_private_access_age, swedish_private_annual, growth_rate
+        )
+        if needed <= isa_at_retirement:
+            low = mid
+        else:
+            high = mid
+
+    return low
+
+
+def find_earliest_retirement(
+    portfolio: Portfolio,
+    min_annual_spending: float,
+    params: OptimizationParams,
+) -> list[dict]:
+    """Find the earliest retirement age given minimum spending requirement.
+
+    Returns a list of retirement ages with their ISA projections.
+    """
+    # Get current balances
+    isa_now = sum(
+        a.balance for a in portfolio.accounts
+        if a.type in (AccountType.SS_ISA, AccountType.CASH_ISA) and a.currency == Currency.GBP
+    )
+    pension_now = sum(
+        a.balance for a in portfolio.accounts
+        if a.type == AccountType.UK_PENSION and a.currency == Currency.GBP
+    )
+    swe_priv_now = sum(
+        a.balance for a in portfolio.accounts
+        if a.type == AccountType.SWEDISH_PENSION and "state" not in a.name.lower()
+    )
+
+    # Swedish private annual payout (calculated at access age)
+    years_to_swedish = params.swedish_private_access_age - params.current_age
+    swe_priv_at_access = swe_priv_now * ((1 + params.growth_rate) ** years_to_swedish)
+    swedish_private_annual = (swe_priv_at_access / params.swedish_payout_years) * params.sek_to_gbp
+
+    results = []
+
+    for retire_age in range(params.current_age, 60):
+        # Project ISA to retirement age
+        isa = isa_now
+        pension = pension_now
+
+        for age in range(params.current_age, retire_age):
+            # Contributions
+            isa += params.isa_contribution
+
+            if params.pension_contribution_stop_age and age >= params.pension_contribution_stop_age:
+                pension += params.pension_contribution_min
+            else:
+                pension += params.pension_contribution_full
+
+            # Growth
+            isa *= (1 + params.growth_rate)
+            pension *= (1 + params.growth_rate)
+
+        # Calculate ISA needed for bridge
+        isa_needed = calculate_isa_needed_for_bridge(
+            retire_age,
+            params.pension_access_age,
+            min_annual_spending,
+            params.swedish_private_access_age,
+            swedish_private_annual,
+            params.growth_rate,
+        )
+
+        # Calculate max bridge spending
+        max_bridge = calculate_max_bridge_spending(
+            isa,
+            retire_age,
+            params.pension_access_age,
+            params.swedish_private_access_age,
+            swedish_private_annual,
+            params.growth_rate,
+        )
+
+        # Project pension to access age
+        pension_at_access = pension
+        for age in range(retire_age, params.pension_access_age):
+            pension_at_access *= (1 + params.growth_rate)
+
+        surplus = isa - isa_needed
+        can_retire = surplus >= 0
+        bridge_years = max(0, params.pension_access_age - retire_age)
+
+        results.append({
+            "retirement_age": retire_age,
+            "isa_at_retirement": isa,
+            "isa_needed": isa_needed,
+            "surplus": surplus,
+            "can_retire": can_retire,
+            "bridge_years": bridge_years,
+            "pension_at_access": pension_at_access,
+            "max_bridge_spend": max_bridge,
+        })
+
+    return results
