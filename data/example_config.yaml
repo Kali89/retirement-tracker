@@ -1,0 +1,58 @@
+# FIRE Tracker Example Configuration
+# Copy this to config.yaml and customize for your situation
+
+settings:
+  base_currency: GBP
+  annual_expenses: 40000      # Your yearly spending
+  safe_withdrawal_rate: 0.04  # 4% rule
+  target_retirement_age: 55   # When you want to retire
+  current_age: 35             # Your current age
+
+exchange_rates:
+  SEK_GBP: 0.073  # Manual rate, update periodically
+
+accounts:
+  - name: "Vanguard S&S ISA"
+    type: ss_isa
+    currency: GBP
+    balance: 50000
+    monthly_contribution: 500
+    expected_return: 0.07
+
+  - name: "Workplace Pension"
+    type: uk_pension
+    currency: GBP
+    balance: 80000
+    monthly_contribution: 800
+    expected_return: 0.06
+    accessible_age: 57
+
+  - name: "Swedish Tjänstepension"
+    type: swedish_pension
+    currency: SEK
+    balance: 200000
+    monthly_contribution: 0
+    expected_return: 0.05
+    accessible_age: 65
+
+  - name: "Emergency Cash"
+    type: cash
+    currency: GBP
+    balance: 10000
+    monthly_contribution: 0
+    expected_return: 0.03
+
+# Future expense changes (mortgage payoff, kids, etc.)
+life_events:
+  - name: "Mortgage paid off"
+    date: "2035-06"
+    expense_change: -1500  # Monthly reduction
+
+  - name: "Kids leave home"
+    date: "2040-01"
+    expense_change: -500
+
+# Income settings for salary sacrifice modeling
+income:
+  gross_salary: 75000
+  salary_sacrifice_percent: 5  # Current pension contribution %
