@@ -785,10 +785,12 @@ def retire(retirement_age: int, expenses: float, years: int, swedish_payout: int
         ))
 
     # Swedish Private Pension
-    swedish_private = sum(
-        a.balance for a in portfolio.accounts
+    swedish_private_accounts = [
+        a for a in portfolio.accounts
         if a.type == AccountType.SWEDISH_PENSION and "state" not in a.name.lower()
-    )
+    ]
+    swedish_private = sum(a.balance for a in swedish_private_accounts)
+    swedish_private_growth = next((a.expected_return for a in swedish_private_accounts), 0.04)
     if swedish_private > 0:
         pots.append(RetirementPot(
             name="Swedish Private Pension",
@@ -796,16 +798,18 @@ def retire(retirement_age: int, expenses: float, years: int, swedish_payout: int
             balance=swedish_private,
             currency=Currency.SEK,
             annual_contribution=0,
-            growth_rate=0.04,
+            growth_rate=swedish_private_growth,
             accessible_age=55,
             payout_years=swedish_payout,
         ))
 
     # Swedish State Pension
-    swedish_state = sum(
-        a.balance for a in portfolio.accounts
+    swedish_state_accounts = [
+        a for a in portfolio.accounts
         if a.type == AccountType.SWEDISH_PENSION and "state" in a.name.lower()
-    )
+    ]
+    swedish_state = sum(a.balance for a in swedish_state_accounts)
+    swedish_state_growth = next((a.expected_return for a in swedish_state_accounts), 0.04)
     if swedish_state > 0:
         pots.append(RetirementPot(
             name="Swedish State Pension",
@@ -813,7 +817,7 @@ def retire(retirement_age: int, expenses: float, years: int, swedish_payout: int
             balance=swedish_state,
             currency=Currency.SEK,
             annual_contribution=0,
-            growth_rate=0.04,
+            growth_rate=swedish_state_growth,
             accessible_age=66,
             payout_years=20,
         ))

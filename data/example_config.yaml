@@ -3,10 +3,10 @@
 
 settings:
   base_currency: GBP
-  annual_expenses: 40000      # Your yearly spending
+  annual_expenses: 70000      # Your yearly spending
   safe_withdrawal_rate: 0.04  # 4% rule
-  target_retirement_age: 55   # When you want to retire
-  current_age: 35             # Your current age
+  target_retirement_age: 45   # When you want to retire
+  current_age: 36             # Your current age
 
 exchange_rates:
   SEK_GBP: 0.073  # Manual rate, update periodically
